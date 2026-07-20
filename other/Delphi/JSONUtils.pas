@@ -1,17 +1,17 @@
 ﻿// Maiores Informações
 // https://github.com/OpenSourceCommunityBrasil/PascalLibs/wiki
-// version 1.0
+// version 1.1
 unit JSONUtils;
 
 interface
 
 // Comment this directive below to make this unit handle VCL controls instead of FMX.
-{$DEFINE FMX}
+{$DEFINE HAS_FMX}
 
 uses
-  {$IFDEF FMX}
+  {$IFDEF HAS_FMX}
   FMX.Forms, FMX.Edit, FMX.ComboEdit, FMX.StdCtrls, FMX.ExtCtrls,
-  FMX.Controls, FMX.ListBox, FMX.DateTimeCtrls,
+  FMX.Controls, FMX.ListBox, FMX.DateTimeCtrls, FMX.Types,
   {$ELSE}
   VCL.Forms, VCL.StdCtrls, VCL.ExtCtrls, VCL.ValEdit,
   {$ENDIF}
@@ -19,11 +19,11 @@ uses
   System.Generics.Defaults, Data.DB;
 
 type
-  TSortOrder = (soAscending, soDescending);
+  TJSONSortOrder = (soAscending, soDescending);
 
   TJSONArraySorter = class helper for TJSONArray
   public
-    procedure Sort(AKeyElement: string; AOrder: TSortOrder = soAscending);
+    procedure Sort(AKeyElement: string; AOrder: TJSONSortOrder = soAscending);
   end;
 
   TDataSetToJSON = class
@@ -48,12 +48,180 @@ type
 function FormToJSONObject(const AForm: TForm): TJSONObject;
 function FormToJSONString(const AForm: TForm): string;
 procedure LoadFormFromJSON(const AJSON: TJSONObject; AForm: TForm);
+procedure LoadFrameFromJSON(const AJSON: TJSONObject; AFrame: TFrame);
 
 implementation
 
+{ Private Functions }
+
+function ContainerToJSONObject(const AContainer:
+  {$IFDEF HAS_FMX}TFMXObject{$ELSE}TComponent{$ENDIF}): TJSONObject;
+var
+  {$IFNDEF HAS_FMX}
+  J: Integer;
+  {$ENDIF}
+  I: Integer;
+  JSONTela, JSONItem: TJSONObject;
+  component: TComponent;
+begin
+  JSONTela := TJSONObject.Create;
+  for I := 0 to pred(AContainer.ComponentCount) do
+  begin
+    component := AContainer.Components[I];
+    if component is TEdit then
+      JSONTela.AddPair(TEdit(component).Name, TEdit(component).Text)
+    else if component is TComboBox then
+    begin
+      if component.Tag = 0 then
+        JSONTela.AddPair(TComboBox(component).Name, TComboBox(component)
+          .ItemIndex.ToString)
+      else if component.Tag = 1 then
+        JSONTela.AddPair(TComboBox(component).Name, TComboBox(component).Text)
+    end
+    {$IFDEF HAS_FMX}
+    else if component is TComboEdit then
+    begin
+      if component.Tag = 0 then
+        JSONTela.AddPair(TComboEdit(component).Name, TComboEdit(component)
+          .ItemIndex.ToString)
+      else if component.Tag = 1 then
+        JSONTela.AddPair(TComboEdit(component).Name, TComboEdit(component).Text)
+    end
+    else if component is TDateEdit then
+      JSONTela.AddPair(TDateEdit(component).Name, TDateEdit(component).Text)
+    else if component is TSwitch then
+      JSONTela.AddPair(TSwitch(component).Name,
+        BoolToStr(TSwitch(component).IsChecked, true))
+    {$ENDIF}
+    else if component is TCheckBox then
+      JSONTela.AddPair(TCheckBox(component).Name,
+        BoolToStr(TCheckBox(component).{$IFDEF HAS_FMX}IsChecked{$ELSE}Checked{$ENDIF}
+        , true))
+    else if component is TLabel then
+      JSONTela.AddPair(TLabel(component).Name,
+        TLabel(component).{$IFDEF HAS_FMX}Text{$ELSE}Caption{$ENDIF})
+      {$IFNDEF HAS_FMX}
+    else if component is TLabeledEdit then
+      JSONTela.AddPair(TLabeledEdit(component).Name, TLabeledEdit(component).Text)
+    else if component is TValueListEditor then
+    begin
+      JSONItem := TJSONObject.Create;
+      for J := 1 to pred(TValueListEditor(component).RowCount) do
+        JSONItem.AddPair(TValueListEditor(component).Keys[J], TValueListEditor(component)
+          .Cells[1, J]);
+      JSONTela.AddPair(TValueListEditor(component).Name,
+        TJSONObject.ParseJSONValue(JSONItem.ToJSON));
+      JSONItem.Free;
+    end
+    {$ENDIF}
+      ;
+  end;
+  Result := JSONTela;
+end;
+
+procedure LoadContainerFromJSON(const AJSON: TJSONObject; AContainer:
+  {$IFDEF HAS_FMX}TFMXObject{$ELSE}TComponent{$ENDIF});
+var
+  {$IFNDEF HAS_FMX}
+  J: Integer;
+  {$ENDIF}
+  I: Integer;
+  JSONTela, JSONItem: TJSONObject;
+  component: TComponent;
+begin
+  JSONTela := AJSON;
+  for I := 0 to pred(AContainer.ComponentCount) do
+  begin
+    component := AContainer.Components[I];
+    if JSONTela.getValue(component.Name) <> nil then
+      if (component.Name <> EmptyStr) and (component.Tag <> -1) then
+        if (component is TEdit) then
+          TEdit(component).Text := JSONTela.getValue(TEdit(component).Name, '')
+        else if (component is TComboBox) then
+        begin
+          if component.Tag = 0 then
+            TComboBox(component).ItemIndex :=
+              JSONTela.getValue(TComboBox(component).Name, 0)
+          else if component.Tag = 1 then
+            TComboBox(component).ItemIndex := TComboBox(component).Items
+              .IndexOf(JSONTela.getValue(TComboBox(component).Name, ''));
+        end
+          {$IFDEF HAS_FMX}
+        else if (component is TComboEdit) then
+        begin
+          if component.Tag = 0 then
+            TComboEdit(component).ItemIndex :=
+              JSONTela.getValue(TComboEdit(component).Name, 0)
+          else if component.Tag = 1 then
+            TComboEdit(component).ItemIndex := TComboEdit(component).Items
+              .IndexOf(JSONTela.getValue(TComboEdit(component).Name, ''));
+        end
+        else if (component is TDateEdit) then
+          TDateEdit(component).Text := JSONTela.getValue(TDateEdit(component).Name, '')
+        else if (component is TSwitch) then
+          TSwitch(component).IsChecked :=
+            StrToBoolDef(JSONTela.getValue(TSwitch(component).Name, 'false'), False)
+          {$ENDIF}
+        else if (component is TCheckBox) then
+          TCheckBox(component).{$IFDEF HAS_FMX}IsChecked{$ELSE}Checked{$ENDIF} :=
+            StrToBoolDef(JSONTela.getValue(TCheckBox(component).Name, 'false'), False)
+        else if (component is TLabel) then
+          TLabel(component).{$IFDEF HAS_FMX}Text{$ELSE}Caption{$ENDIF} :=
+            JSONTela.getValue(TLabel(component).Name, '')
+          {$IFNDEF HAS_FMX}
+        else if component is TLabeledEdit then
+          TLabeledEdit(component).Text :=
+            JSONTela.getValue(TLabeledEdit(component).Name, '')
+        else if (component is TValueListEditor) then
+        begin
+          JSONItem :=
+            TJSONObject(TJSONObject.ParseJSONValue
+            (JSONTela.getValue(TValueListEditor(component).Name).ToJSON));
+          if JSONItem <> nil then
+            for J := 1 to pred(TValueListEditor(component).RowCount) do
+              TValueListEditor(component).Cells[1, J] :=
+                JSONItem.getValue(TValueListEditor(component).Keys[J]).Value;
+          JSONItem.Free;
+        end
+        {$ENDIF}
+          ;
+  end;
+end;
+
+{ Public Functions }
+
+procedure LoadFrameFromJSON(const AJSON: TJSONObject; AFrame: TFrame);
+begin
+  LoadContainerFromJSON(AJSON, AFrame);
+end;
+
+procedure LoadFormFromJSON(const AJSON: TJSONObject; AForm: TForm);
+begin
+  LoadContainerFromJSON(AJSON, AForm);
+end;
+
+function FormToJSONObject(const AForm: TForm): TJSONObject;
+begin
+  Result := ContainerToJSONObject(AForm);
+end;
+
+function FormToJSONString(const AForm: TForm): string;
+var
+  JSON: TJSONObject;
+begin
+  Result := '';
+  try
+    JSON := FormToJSONObject(AForm);
+    Result := JSON.ToJSON;
+  finally
+    if assigned(JSON) then
+      JSON.Free;
+  end;
+end;
+
 { TJSONArraySorter }
 
-procedure TJSONArraySorter.Sort(AKeyElement: string; AOrder: TSortOrder);
+procedure TJSONArraySorter.Sort(AKeyElement: string; AOrder: TJSONSortOrder);
 var
   cntr: Integer;
   elementList: TList<TJSONValue>;
@@ -91,133 +259,6 @@ begin
       elementList.Free;
       raise;
     end;
-  end;
-end;
-
-function FormToJSONObject(const AForm: TForm): TJSONObject;
-var
-  {$IFNDEF HAS_FMX}
-  J: Integer;
-  {$ENDIF}
-  I: Integer;
-  JSONTela, JSONItem: TJSONObject;
-  component: TComponent;
-begin
-  JSONTela := TJSONObject.Create;
-  for I := 0 to pred(AForm.ComponentCount) do
-  begin
-    component := AForm.Components[I];
-    if component is TEdit then
-      JSONTela.AddPair(TEdit(component).Name, TEdit(component).Text)
-    else if component is TComboBox then
-      JSONTela.AddPair(TComboBox(component).Name, TComboBox(component).ItemIndex.ToString)
-      {$IFDEF HAS_FMX}
-    else if component is TComboEdit then
-      JSONTela.AddPair(TComboEdit(component).Name, TComboEdit(component)
-        .ItemIndex.ToString)
-    else if component is TDateEdit then
-      JSONTela.AddPair(TDateEdit(component).Name, TDateEdit(component).Text)
-    else if component is TSwitch then
-      JSONTela.AddPair(TSwitch(component).Name,
-      {$IF CompilerVersion < 35}BoolToStr({$ENDIF}
-      TSwitch(component).IsChecked
-      {$IF CompilerVersion < 35}, true){$ENDIF}
-        )
-      {$ENDIF}
-    else if component is TCheckBox then
-      JSONTela.AddPair(TCheckBox(component).Name,
-      {$IF CompilerVersion < 35}BoolToStr({$ENDIF}
-      TCheckBox(component).{$IFDEF HAS_FMX}IsChecked{$ELSE}Checked{$ENDIF}
-      {$IF CompilerVersion < 35}, true){$ENDIF}
-        )
-      {$IFNDEF HAS_FMX}
-    else if component is TLabeledEdit then
-      JSONTela.AddPair(TLabeledEdit(component).Name, TLabeledEdit(component).Text)
-    else if component is TValueListEditor then
-    begin
-      JSONItem := TJSONObject.Create;
-      for J := 1 to pred(TValueListEditor(component).RowCount) do
-        JSONItem.AddPair(TValueListEditor(component).Keys[J], TValueListEditor(component)
-          .Cells[1, J]);
-      JSONTela.AddPair(TValueListEditor(component).Name,
-        TJSONObject.ParseJSONValue(JSONItem.ToJSON));
-      JSONItem.Free;
-    end
-    {$ENDIF}
-      ;
-  end;
-  Result := JSONTela;
-end;
-
-procedure LoadFormFromJSON(const AJSON: TJSONObject; AForm: TForm);
-var
-  {$IFNDEF HAS_FMX}
-  J: Integer;
-  {$ENDIF}
-  I: Integer;
-  JSONTela, JSONItem: TJSONObject;
-  component: TComponent;
-begin
-  JSONTela := AJSON;
-  try
-    for I := 0 to pred(AForm.ComponentCount) do
-    begin
-      component := AForm.Components[I];
-      if JSONTela.getValue(component.Name) <> nil then
-        if (component.Name <> EmptyStr) and (component.Tag <> -1) then
-          if (component is TEdit) then
-            TEdit(component).Text := JSONTela.getValue(TEdit(component).Name).Value
-          else if (component is TComboBox) then
-            TComboBox(component).ItemIndex := JSONTela.getValue(TComboBox(component).Name)
-              .Value.ToInteger
-            {$IFDEF HAS_FMX}
-          else if (component is TComboEdit) then
-            TComboEdit(component).ItemIndex :=
-              JSONTela.getValue(TComboEdit(component).Name).Value.ToInteger
-          else if (component is TDateEdit) then
-            TDateEdit(component).Text :=
-              JSONTela.getValue(TDateEdit(component).Name).Value
-          else if (component is TSwitch) then
-            TSwitch(component).IsChecked := JSONTela.getValue(TSwitch(component).Name)
-              .Value.ToBoolean
-            {$ENDIF}
-          else if (component is TCheckBox) then
-            TCheckBox(component).{$IFDEF HAS_FMX}IsChecked{$ELSE}Checked{$ENDIF} :=
-              JSONTela.getValue(TCheckBox(component).Name).Value.ToBoolean
-            {$IFNDEF HAS_FMX}
-          else if component is TLabeledEdit then
-            TLabeledEdit(component).Text :=
-              JSONTela.getValue(TLabeledEdit(component).Name).Value
-          else if (component is TValueListEditor) then
-          begin
-            JSONItem :=
-              TJSONObject(TJSONObject.ParseJSONValue
-              (JSONTela.getValue(TValueListEditor(component).Name).ToJSON));
-            if JSONItem <> nil then
-              for J := 1 to pred(TValueListEditor(component).RowCount) do
-                TValueListEditor(component).Cells[1, J] :=
-                  JSONItem.getValue(TValueListEditor(component).Keys[J]).Value;
-            JSONItem.Free;
-          end
-          {$ENDIF}
-            ;
-    end;
-  finally
-    JSONTela.Free;
-  end;
-end;
-
-function FormToJSONString(const AForm: TForm): string;
-var
-  JSON: TJSONObject;
-begin
-  Result := '';
-  try
-    JSON := FormToJSONObject(AForm);
-    Result := JSON.ToJSON;
-  finally
-    if assigned(JSON) then
-      JSON.Free;
   end;
 end;
 
